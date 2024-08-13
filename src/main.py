@@ -83,7 +83,7 @@ app: FastAPI = FastAPI()
 client: AsyncClient = AsyncClient()
 
 
-@app.post('/')
+@app.post('/api/generate')
 async def generate(request: APIRequest) -> StreamingResponse:
     """Question endpoint.
 
