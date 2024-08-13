@@ -1,13 +1,11 @@
 """Main app. Redirects requests to local ollama, adds simple authentication."""
 
-import json
 from os import environ
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from httpx import AsyncClient
-from pydantic import BaseModel
 from uvicorn import run
 
 
@@ -29,66 +27,47 @@ class Conf:
     timeout: int = 120
 
 
-class APIResponse(BaseModel):
-    """API Response model."""
-
-    token: str
-    done: bool = False
-
-
-class APIRequest(BaseModel):
-    """API Request model."""
-
-    question: str
-    token: str
-
-    async def is_token_valid(self) -> bool:
-        """Token validation.
-
-        Returns:
-            bool: True if valid
-        """
-        return self.token == Conf.token
-
-    async def re_stream(self) -> AsyncGenerator[str, None]:
-        """Re-stream data from local ollama.
-
-        Yields:
-            Iterator[AsyncGenerator[str, None]]: json-like string of data.
-        """
-        load: dict[str, str] = {'model': Conf.model, 'prompt': self.question}
-
-        args: tuple[str, ...] = 'post', Conf.endpoint
-        kwargs: dict = {'json': load, 'timeout': Conf.timeout}
-
-        async with client.stream(*args, **kwargs) as response:
-            async for line in response.aiter_lines():
-                yield await self._process_line(line)
-
-    async def _process_line(self, line: str):
-        response: dict = json.loads(line)
-
-        api_response: APIResponse = APIResponse(
-            token=response['response'],
-            done=response['done'],
-        )
-
-        return await self._to_string(api_response)
-
-    async def _to_string(self, api_response: APIResponse) -> str:
-        return ''.join((api_response.model_dump_json(), '\n'))
-
-
 app: FastAPI = FastAPI()
 client: AsyncClient = AsyncClient()
 
 
+async def token_valid(payload: dict) -> bool:
+    """Token validation.
+
+    Args:
+        payload (dict): json dict.
+
+    Returns:
+        bool: True if valid.
+    """
+    model: str = payload.get('model', '')
+    token: str = model.split(' ')[0]
+    return token == Conf.token
+
+
+async def re_stream(payload: dict) -> AsyncGenerator[str, None]:
+    """Re-stream data from local ollama.
+
+    Args:
+        payload (dict): json payload.
+
+    Yields:
+        Iterator[AsyncGenerator[str, None]]: json-like string of data.
+    """
+    args: tuple[str, ...] = 'post', Conf.endpoint
+    kwargs: dict = {'json': payload, 'timeout': Conf.timeout}
+
+    async with client.stream(*args, **kwargs) as response:
+        async for line in response.aiter_lines():
+            yield line
+
+
 @app.post('/api/generate')
-async def generate(request: APIRequest) -> StreamingResponse:
+async def generate(request: Request) -> StreamingResponse:
     """Question endpoint.
 
     Args:
-        request (APIRequest): API request.
+        request (Request): API request.
 
     Raises:
         HTTPException: if token is not valid.
@@ -96,8 +75,11 @@ async def generate(request: APIRequest) -> StreamingResponse:
     Returns:
         StreamingResponse: stream of data.
     """
-    if await request.is_token_valid():
-        return StreamingResponse(request.re_stream(), media_type=Conf.media)
+    payload: dict = await request.json()
+
+    if await token_valid(payload):
+        payload['model'] = payload['model'].split(' ')[1]
+        return StreamingResponse(re_stream(payload), media_type=Conf.media)
 
     raise HTTPException(Conf.code, detail=Conf.detail)
 
