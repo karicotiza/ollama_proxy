@@ -59,7 +59,7 @@ async def re_stream(payload: dict) -> AsyncGenerator[str, None]:
 
     async with client.stream(*args, **kwargs) as response:
         async for line in response.aiter_lines():
-            yield line
+            yield ''.join((line, '\n'))
 
 
 @app.post('/api/generate')
